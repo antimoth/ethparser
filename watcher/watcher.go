@@ -24,6 +24,8 @@ import (
 
 	"ethparser/log"
 
+	"github.com/antimoth/ethparser/client"
+
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -39,15 +41,17 @@ var (
 	eLogger = log.NewLogger(viper.GetString("loglevel"))
 )
 
-func NewWatcher(rawurl string, confirmHeight uint64) (*Watcher, error) {
-	return DialContext(context.Background(), rawurl, confirmHeight)
+type Watcher struct {
+	c             *client.Client
+	confirmHeight *big.Int
+	currentHeight *big.Int
 }
 
-func DialContext(ctx context.Context, rawurl string, confirmHeight uint64) (*Watcher, error) {
+func NewWatcher(rawurl string, confirmHeight uint64) (*Watcher, error) {
 
 	eLogger = log.NewLogger(viper.GetString("loglevel"))
 
-	c, err := rpc.DialContext(ctx, rawurl)
+	c, err := client.NewClient(rawurl)
 	if err != nil {
 		return nil, err
 	}
@@ -68,7 +72,7 @@ func (ew *Watcher) Close() {
 }
 
 func (ew *Watcher) ReviewBlock(start big.Int, ch chan<- *big.Int) {
-	cur, err := ew.BlockNumber()
+	cur, err := ew.c.BlockNumber()
 	if err != nil {
 		panic("get current height error!")
 	}
@@ -85,9 +89,9 @@ func (ew *Watcher) ReviewBlock(start big.Int, ch chan<- *big.Int) {
 }
 
 func (ew *Watcher) StartWatchBlock(start big.Int, heightCh chan<- *big.Int) {
-	wCh := make(chan *RpcHeader, 1000)
+	wCh := make(chan *client.RpcHeader, 1000)
 	rCh := make(chan *big.Int, 1000)
-	sub, err := ew.SubscribeNewHead(ensureContext(nil), wCh)
+	sub, err := ew.SubscribeNewHead(client.EnsureContext(nil), wCh)
 	if err != nil {
 		panic(fmt.Sprintf("subscribe new block error! e is %v!", err.Error()))
 	}
@@ -121,7 +125,7 @@ func (ew *Watcher) StartWatchBlock(start big.Int, heightCh chan<- *big.Int) {
 func (ew *Watcher) WatchPendingTx(ch chan<- *common.Hash) {
 	txCh := make(chan *common.Hash, 1000)
 
-	ctx := ensureContext(nil)
+	ctx := client.EnsureContext(nil)
 	sub, err := ew.SubscribePendingTx(ctx, txCh)
 	if err != nil {
 		panic(err)
@@ -143,19 +147,10 @@ func (ew *Watcher) WatchPendingTx(ch chan<- *common.Hash) {
 
 // SubscribeNewHead subscribes to notifications about the current blockchain head
 // on the given channel.
-func (ew *Watcher) SubscribeNewHead(ctx context.Context, ch chan<- *RpcHeader) (ethereum.Subscription, error) {
+func (ew *Watcher) SubscribeNewHead(ctx context.Context, ch chan<- *client.RpcHeader) (ethereum.Subscription, error) {
 	return ew.c.EthSubscribe(ctx, ch, "newHeads")
 }
 
 func (ew *Watcher) SubscribePendingTx(ctx context.Context, ch chan<- *common.Hash) (ethereum.Subscription, error) {
 	return ew.c.EthSubscribe(ctx, ch, "newPendingTransactions")
-}
-
-func (ew *Watcher) BlockNumber() (*big.Int, error) {
-	var hex hexutil.Big
-	if err := ew.c.CallContext(ensureContext(nil), &hex, "eth_blockNumber"); err != nil {
-		eLogger.Error("Get blockNumber error!", "error", err)
-		return nil, err
-	}
-	return (*big.Int)(&hex), nil
 }
