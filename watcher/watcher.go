@@ -1,35 +1,15 @@
-// Copyright 2016 The go-ethereum Authors
-// This file is part of the go-ethereum library.
-//
-// The go-ethereum library is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Lesser General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// The go-ethereum library is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU Lesser General Public License for more details.
-//
-// You should have received a copy of the GNU Lesser General Public License
-// along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
-
-// Package ethclient provides a client for the Ethereum RPC API.
 package watcher
 
 import (
-	"context"
 	"fmt"
 	"math/big"
-
-	"ethparser/log"
+	"time"
 
 	"github.com/antimoth/ethparser/client"
+	"github.com/antimoth/ethparser/log"
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/common/hexutil"
-	"github.com/ethereum/go-ethereum/rpc"
 	"github.com/spf13/viper"
 )
 
@@ -71,7 +51,11 @@ func (ew *Watcher) Close() {
 	ew.c.Close()
 }
 
-func (ew *Watcher) ReviewBlock(start big.Int, ch chan<- *big.Int) {
+func (ew *Watcher) GetClient() *client.Client {
+	return ew.c
+}
+
+func (ew *Watcher) ReviewBlock(start *big.Int, ch chan<- *big.Int) {
 	cur, err := ew.c.BlockNumber()
 	if err != nil {
 		panic("get current height error!")
@@ -81,41 +65,78 @@ func (ew *Watcher) ReviewBlock(start big.Int, ch chan<- *big.Int) {
 	curConfirm := new(big.Int).Sub(cur, ew.confirmHeight)
 	increaser := big.NewInt(1)
 	go func() {
-		for i := &start; i.Cmp(curConfirm) <= 0; i = new(big.Int).Add(i, increaser) {
+		for i := start; i.Cmp(curConfirm) <= 0; i = new(big.Int).Add(i, increaser) {
 			ch <- i
 		}
 		close(ch)
 	}()
 }
 
-func (ew *Watcher) StartWatchBlock(start big.Int, heightCh chan<- *big.Int) {
+func (ew *Watcher) WatchBlock(start *big.Int, heightCh chan<- *big.Int) {
 	wCh := make(chan *client.RpcHeader, 1000)
 	rCh := make(chan *big.Int, 1000)
-	sub, err := ew.SubscribeNewHead(client.EnsureContext(nil), wCh)
+
+	sub, err := ew.SubscribeNewHead(wCh)
 	if err != nil {
-		panic(fmt.Sprintf("subscribe new block error! e is %v!", err.Error()))
+		panic(fmt.Sprintf("create sub new blocks error! e is %v!", err.Error()))
 	}
+
 	ew.ReviewBlock(start, rCh)
+
 	bigConfirmH := ew.confirmHeight
+	increaser := big.NewInt(1)
+
 	go func() {
 		defer sub.Unsubscribe()
-		for {
+
+		for blockHeight := range rCh {
 			select {
-			case blockHeight := <-rCh:
-				heightCh <- blockHeight
-			default:
-				select {
-				case blockHeight := <-rCh:
-					heightCh <- blockHeight
-				case blockHeader := <-wCh:
-					bigIntNumber := (*big.Int)(blockHeader.Number)
-					if bigIntNumber.Cmp(ew.currentHeight) > 0 {
-						heightCh <- new(big.Int).Sub(bigIntNumber, bigConfirmH)
-						ew.currentHeight = bigIntNumber
+			case heightCh <- blockHeight:
+			}
+		}
+
+		for {
+		LoopBlocks:
+			select {
+			case blockHeader := <-wCh:
+				bigIntNumber := (*big.Int)(blockHeader.Number)
+				if bigIntNumber.Cmp(ew.currentHeight) > 0 {
+					startH := new(big.Int).Add(ew.currentHeight, increaser)
+
+					for i := startH; i.Cmp(bigIntNumber) <= 0; i = new(big.Int).Add(i, increaser) {
+						pushH := new(big.Int).Sub(i, bigConfirmH)
+						select {
+						case heightCh <- pushH:
+							eLogger.Debug("watched ethereum block", "height", pushH.Uint64())
+						}
 					}
-				case err := <-sub.Err():
-					eLogger.Error("watch block error", "error", err.Error())
-					return
+
+					ew.currentHeight = bigIntNumber
+
+				} else {
+					eLogger.Warn("receive ethereum block height under current", "height", bigIntNumber.Uint64(), "current", ew.currentHeight.Uint64())
+				}
+
+			case err := <-sub.Err():
+				eLogger.Error("sub new blocks error", "error", err.Error())
+
+				reConnectTimes := 1
+				tiker := time.NewTicker(time.Second * 10)
+				for {
+					select {
+					case <-tiker.C:
+						sub, err = ew.SubscribeNewHead(wCh)
+						if err == nil {
+							eLogger.Info("sub new blocks reconnected!")
+							tiker.Stop()
+							tiker = nil
+							goto LoopBlocks
+
+						} else {
+							eLogger.Error("sub new blocks reconnect error", "error", err, "tryTimes", reConnectTimes)
+							reConnectTimes += 1
+						}
+					}
 				}
 			}
 		}
@@ -125,32 +146,52 @@ func (ew *Watcher) StartWatchBlock(start big.Int, heightCh chan<- *big.Int) {
 func (ew *Watcher) WatchPendingTx(ch chan<- *common.Hash) {
 	txCh := make(chan *common.Hash, 1000)
 
-	ctx := client.EnsureContext(nil)
-	sub, err := ew.SubscribePendingTx(ctx, txCh)
+	sub, err := ew.SubscribePendingTx(txCh)
 	if err != nil {
-		panic(err)
+		panic(fmt.Sprintf("create sub pending tranx error! e is %v!", err.Error()))
 	}
 
 	go func() {
 		defer sub.Unsubscribe()
+
 		for {
+		LoopTranx:
 			select {
 			case txHash := <-txCh:
 				ch <- txHash
+
 			case err := <-sub.Err():
 				eLogger.Error("sub pending tranx error!", "error", err.Error())
-				return
+
+				reConnectTimes := 1
+				tiker := time.NewTicker(time.Second * 10)
+
+				for {
+					select {
+					case <-tiker.C:
+						sub, err = ew.SubscribePendingTx(txCh)
+
+						if err == nil {
+							eLogger.Info("sub pending tranx reconnected!")
+							tiker.Stop()
+							tiker = nil
+							goto LoopTranx
+
+						} else {
+							eLogger.Error("sub pending tranx reconnect error", "error", err, "tryTimes", reConnectTimes)
+							reConnectTimes += 1
+						}
+					}
+				}
 			}
 		}
 	}()
 }
 
-// SubscribeNewHead subscribes to notifications about the current blockchain head
-// on the given channel.
-func (ew *Watcher) SubscribeNewHead(ctx context.Context, ch chan<- *client.RpcHeader) (ethereum.Subscription, error) {
-	return ew.c.EthSubscribe(ctx, ch, "newHeads")
+func (ew *Watcher) SubscribeNewHead(ch chan<- *client.RpcHeader) (ethereum.Subscription, error) {
+	return ew.c.EthSubscribe(ch, "newHeads")
 }
 
-func (ew *Watcher) SubscribePendingTx(ctx context.Context, ch chan<- *common.Hash) (ethereum.Subscription, error) {
-	return ew.c.EthSubscribe(ctx, ch, "newPendingTransactions")
+func (ew *Watcher) SubscribePendingTx(ch chan<- *common.Hash) (ethereum.Subscription, error) {
+	return ew.c.EthSubscribe(ch, "newPendingTransactions")
 }

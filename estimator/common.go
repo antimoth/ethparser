@@ -1,4 +1,4 @@
-package estimateprice
+package estimator
 
 import (
 	"math/big"

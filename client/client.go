@@ -22,7 +22,7 @@ import (
 	"encoding/json"
 	"math/big"
 
-	"ethparser/log"
+	"github.com/antimoth/ethparser/log"
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
@@ -267,6 +267,10 @@ func (ec *Client) BlockNumber() (*big.Int, error) {
 		return nil, err
 	}
 	return (*big.Int)(&hex), nil
+}
+
+func (ec *Client) EthSubscribe(channel interface{}, args ...interface{}) (ethereum.Subscription, error) {
+	return ec.c.EthSubscribe(EnsureContext(nil), channel, args...)
 }
 
 // SuggestGasPrice retrieves the currently suggested gas price to allow a timely
