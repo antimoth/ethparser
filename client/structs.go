@@ -33,8 +33,9 @@ type RpcHeader struct {
 }
 
 type RpcBlock struct {
-	Transactions []*RpcTx      `json:"transactions"`
-	BlockNumber  *hexutil.Big  `json:"number"`
-	BlockHash    *common.Hash  `json:"hash"`
-	Timestamp    *hexutil.Uint `json:"timestamp"`
+	Transactions []*RpcTx        `json:"transactions"`
+	BlockNumber  *hexutil.Big    `json:"number"`
+	BlockHash    *common.Hash    `json:"hash"`
+	Timestamp    *hexutil.Big    `json:"timestamp"`
+	Miner        *common.Address `json:"miner"`
 }

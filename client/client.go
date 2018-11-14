@@ -59,6 +59,10 @@ func (ec *Client) GetClient() *rpc.Client {
 	return ec.c
 }
 
+func (ec *Client) GetBlockInfoFromHeight(height *big.Int) (*RpcBlock, error) {
+	return ec.BlockByNumber(EnsureContext(nil), height)
+}
+
 // Blockchain Access
 
 // BlockByNumber returns a block from the current canonical chain. If number is nil, the
